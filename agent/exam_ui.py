@@ -10,7 +10,7 @@ from PySide6.QtCore import QObject, QThread, QTimer, Qt, Signal, QSize, QRectF, 
 from PySide6.QtGui import QColor, QPainter, QPen, QFont, QPixmap
 from PySide6.QtWidgets import (QApplication, QHBoxLayout, QBoxLayout, QFrame, QStyledItemDelegate, QStyle, QScrollArea, QVBoxLayout)
 from .localized_widgets import (QCheckBox, QComboBox, QDialog, QFileDialog, QLabel, QLineEdit, QListWidget, QPushButton, QWidget)
-from .student_state import REASONS
+from .student_state import REASONS, DISPLAY_CHANGE_WITHOUT_CAMERA
 from .theme import APP_QSS, COLORS, CountdownRing, CameraEvidence, brand_widget, ui_icon, app_font
 
 
@@ -24,6 +24,8 @@ def text(value, size=14):
 
 def teacher_template_access_note(agent):
     """Show the server device identity, never its enrollment token."""
+    if getattr(agent, "without_camera", False):
+        return ""
     config = getattr(agent, 'config', {})
     if getattr(agent, 'mode', 'online') == 'offline':
         from .profile import read_object
@@ -52,6 +54,7 @@ def gaze_warning_active(snap):
     return bool(
         snap["state"]["lifecycle"] == "RUNNING"
         and snap["state"]["access"] == "OPEN"
+        and not snap.get("without_camera")
         and snap.get("camera")
         and not snap.get("camera_fault")
         and not snap.get("recognition_paused")
@@ -70,6 +73,7 @@ def head_warning_active(snap):
     return bool(
         snap["state"]["lifecycle"] == "RUNNING"
         and snap["state"]["access"] == "OPEN"
+        and not snap.get("without_camera")
         and snap.get("camera") and not snap.get("camera_fault")
         and not snap.get("recognition_paused")
         and gaze.get("head_reference_ready")
@@ -91,7 +95,7 @@ class WarningDisplayHold:
     def update(self, snap, now):
         if (snap["state"]["lifecycle"] != "RUNNING"
                 or snap["state"]["access"] != "OPEN"
-                or not snap.get("camera") or snap.get("camera_fault")
+                or snap.get("without_camera") or not snap.get("camera") or snap.get("camera_fault")
                 or snap.get("recognition_paused")):
             self.parts.clear()
             return ""
@@ -346,8 +350,10 @@ class LockScreen(QWidget):
         main.setSpacing(10)
         self.reason = text("Тест на паузе", 24)
         main.addWidget(self.reason)
-        main.addWidget(text("Преподаватель посмотрит запись и решит, продолжать ли тест. Окно теста остаётся открытым под этим экраном.", 15))
-        main.addWidget(text("Вернуть взгляд или перезапустить Qorgau не поможет: продолжить тест может только преподаватель.", 12))
+        self.pause_explanation = text("Преподаватель посмотрит запись и решит, продолжать ли тест. Окно теста остаётся открытым под этим экраном.", 15)
+        main.addWidget(self.pause_explanation)
+        self.resume_explanation = text("Вернуть взгляд или перезапустить Qorgau не поможет: продолжить тест может только преподаватель.", 12)
+        main.addWidget(self.resume_explanation)
         self.online_notice = text("Преподаватель уже видит это у себя в кабинете", 12)
         self.online_notice.setObjectName('badge')
         self.online_notice.setVisible(getattr(agent, 'mode', 'online') != 'offline')
@@ -397,9 +403,9 @@ class LockScreen(QWidget):
         self.columns.addWidget(self.evidence, 2)
         self.body_scroll.setWidget(body)
         root.addWidget(self.body_scroll, 1)
-        footer = text("Событие — повод посмотреть запись. Решение о нарушении принимает преподаватель.", 12)
-        footer.setContentsMargins(56, 0, 56, 18)
-        root.addWidget(footer)
+        self.footer = text("Событие — повод посмотреть запись. Решение о нарушении принимает преподаватель.", 12)
+        self.footer.setContentsMargins(56, 0, 56, 18)
+        root.addWidget(self.footer)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -408,6 +414,14 @@ class LockScreen(QWidget):
         self.heading.setStyleSheet(f"font-size:{36 if narrow else 72}px;font-weight:600;")
 
     def update_state(self, snap):
+        no_camera = bool(snap.get("without_camera"))
+        self.pause_explanation.setText("Окно теста остаётся открытым под этим экраном. Продолжить или завершить контроль можно по паролю преподавателя." if no_camera else
+                                      "Преподаватель посмотрит запись и решит, продолжать ли тест. Окно теста остаётся открытым под этим экраном.")
+        self.resume_explanation.setText("Камера и распознавание отключены. Ограничения компьютера продолжают действовать." if no_camera else
+                                       "Вернуть взгляд или перезапустить Qorgau не поможет: продолжить тест может только преподаватель.")
+        self.footer.setText("Решение о нарушении принимает преподаватель." if no_camera else
+                            "Событие — повод посмотреть запись. Решение о нарушении принимает преподаватель.")
+        self.face_unlock.setVisible(not no_camera)
         self.face_access_note.setText(teacher_template_access_note(self.agent))
         self.face_access_note.setVisible(bool(self.face_access_note.text()))
         self.feedback.setVisible(bool(self.feedback.text()))
@@ -417,17 +431,18 @@ class LockScreen(QWidget):
         trigger = next((e for e in reversed(events) if e.get('type') == snap['state'].get('reason')), None)
         timestamp = trigger.get('created_at') if trigger else None
         happened = time.strftime('%H:%M', time.localtime(timestamp)) if isinstance(timestamp, (int, float)) else ''
-        reason = REASONS.get(snap["state"].get("reason"), "Работайте в выбранном окне теста.").rstrip('.')
+        reason = (DISPLAY_CHANGE_WITHOUT_CAMERA if no_camera and snap["state"].get("reason") == "DISPLAY_CHANGED"
+                  else REASONS.get(snap["state"].get("reason"), "Работайте в выбранном окне теста.")).rstrip('.')
         self.reason.setText(reason + (f" в {happened}" if happened else ''))
         self.device_time.setText(snap.get('device_name') or getattr(self.agent, 'config', {}).get('name', 'Компьютер'))
         if happened:
             self.device_time.setText(self.device_time.text() + ', ' + happened)
         self.form.setVisible(locked)
-        self.face_unlock.setEnabled(not snap.get("teacher_face_scan") and not (self.worker and self.worker.isRunning()))
-        self.recover.setVisible(locked and snap["state"].get("reason") in (
+        self.face_unlock.setEnabled(not no_camera and not snap.get("teacher_face_scan") and not (self.worker and self.worker.isRunning()))
+        self.recover.setVisible(not no_camera and locked and snap["state"].get("reason") in (
             "AGENT_RESTARTED", "CAMERA_UNAVAILABLE", "CAMERA_FROZEN", "DISPLAY_CHANGED"
         ))
-        marker = (snap["state"]["lock_id"], snap["state"]["epoch"],
+        marker = (no_camera, snap["state"]["lock_id"], snap["state"]["epoch"],
                   tuple((e["id"], e.get("thumbnail_path"), e.get("end")) for e in events))
         if marker == self.marker:
             return
@@ -436,7 +451,7 @@ class LockScreen(QWidget):
             item = self.evidence_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
-        self.evidence_layout.addWidget(text("Что заметила камера", 18))
+        self.evidence_layout.addWidget(text("События контроля компьютера" if no_camera else "Что заметила камера", 18))
         thumbnail = next((e for e in reversed(events) if e.get('thumbnail_path')), None)
         if thumbnail:
             picture = QPixmap(thumbnail['thumbnail_path'])
@@ -457,17 +472,20 @@ class LockScreen(QWidget):
             caption = {
                 "GAZE_DOWN": "↓ Взгляд вниз", "GAZE_LEFT": "← Взгляд влево",
                 "GAZE_RIGHT": "→ Взгляд вправо", "HEAD_TURN_REVIEW": "Поворот головы — ждёт решения",
-            }.get(event["type"], REASONS.get(event['type'], event['type']))
+            }.get(event["type"], DISPLAY_CHANGE_WITHOUT_CAMERA if no_camera and event["type"] == "DISPLAY_CHANGED"
+                  else REASONS.get(event['type'], event['type']))
             if event.get('duration'):
                 caption += f", {event['duration']:.1f} с"
             self.evidence_layout.addWidget(text(caption, 14))
             if happened:
                 self.evidence_layout.addWidget(text(happened, 12))
         if not events:
-            self.evidence_layout.addWidget(text("Причина указана слева. История и видео доступны в кабинете преподавателя."))
+            self.evidence_layout.addWidget(text("Причина указана слева. В этом режиме камера и запись отключены." if no_camera else "Причина указана слева. История и видео доступны в кабинете преподавателя."))
         self.evidence_layout.addStretch()
 
     def recover_camera(self):
+        if self.agent.without_camera:
+            return
         from .camera_setup import CameraSetup
         if self.calibration and self.calibration.isVisible():
             self.calibration.raise_()
@@ -495,6 +513,8 @@ class LockScreen(QWidget):
         self.worker.start()
 
     def request_face_unlock(self):
+        if self.agent.without_camera:
+            return
         if self.worker and self.worker.isRunning():
             return
         self.password.clear()
@@ -509,7 +529,7 @@ class LockScreen(QWidget):
 
     def unlock_done(self, error):
         self.unlock.setEnabled(True)
-        self.face_unlock.setEnabled(True)
+        self.face_unlock.setEnabled(not self.agent.without_camera)
         self.finish.setEnabled(True)
         self.feedback.setText(error or "Преподаватель разрешил продолжить")
 
@@ -570,7 +590,7 @@ class TargetPicker(QDialog):
         layout.addWidget(text("Выберите окно программы", 28))
         layout.addWidget(
             text(
-                "Откройте программу тестирования и выберите её окно. Для сайта преподаватель откроет Qorgau Browser.",
+                "Выберите окно программы. Для сайта выберите вкладку или вставьте её адрес — он откроется в Qorgau Browser.",
                 14,
             )
         )
@@ -617,26 +637,20 @@ class TargetPicker(QDialog):
 
         self.windows = WindowsGuard().windows()
         for window in self.windows:
-            browser = Path(window.executable).name.lower() in {"chrome.exe", "msedge.exe", "firefox.exe", "opera.exe", "brave.exe"}
-            detail = "Браузер не подходит: сайт откроет Qorgau Browser" if browser else f"Программа, {Path(window.executable).name}"
+            browser = self.is_browser(window.executable)
+            detail = "Выберите вкладку или адрес для Qorgau Browser" if browser else f"Программа, {Path(window.executable).name}"
             self.items.addItem(f"{window.title}\n{detail}")
             item = self.items.item(self.items.count() - 1)
             item.setData(Qt.ItemDataRole.UserRole, 'globe' if browser else 'window')
-            item.setData(Qt.ItemDataRole.UserRole + 1, browser)
+            item.setData(Qt.ItemDataRole.UserRole + 1, False)
 
     def choose_window(self):
         row = self.items.currentRow()
         if 0 <= row < len(self.windows):
             w = self.windows[row]
-            browser = Path(w.executable).name.lower() in {
-                "chrome.exe",
-                "msedge.exe",
-                "firefox.exe",
-                "opera.exe",
-                "brave.exe",
-            }
-            if browser and getattr(self.agent, "mode", "online") == "offline":
-                self.feedback.setText("Для Chrome / Edge выберите отдельную вкладку кнопкой «Выбрать вкладку» в главном окне.")
+            browser = self.is_browser(w.executable)
+            if browser:
+                self.choose_browser()
                 return
             self.selected = {
                 "id": "primary-window",
@@ -648,6 +662,17 @@ class TargetPicker(QDialog):
             }
             self.accept()
 
+    @staticmethod
+    def is_browser(executable):
+        from .browser_tabs import is_browser_executable
+        return is_browser_executable(executable)
+
+    def choose_browser(self):
+        dialog = BrowserTabPicker(self.agent, self)
+        if dialog.exec() and dialog.selected:
+            self.selected = dialog.selected
+            self.accept()
+
     def choose_executable(self):
         path, _ = QFileDialog.getOpenFileName(
             self,
@@ -656,13 +681,10 @@ class TargetPicker(QDialog):
             "Приложение (*.exe)" if os.name == "nt" else "Все файлы (*)",
         )
         if path:
-            browser = Path(path).name.lower() in {
-                "chrome.exe",
-                "msedge.exe",
-                "firefox.exe",
-                "opera.exe",
-                "brave.exe",
-            }
+            browser = self.is_browser(path)
+            if browser:
+                self.choose_browser()
+                return
             self.selected = {
                 "id": "primary-app",
                 "name": Path(path).stem,
@@ -674,20 +696,20 @@ class TargetPicker(QDialog):
 
 
 class BrowserTabPicker(QDialog):
-    """Use the extension's actual tab roster; window titles never impersonate tabs."""
+    """Import a real tab address or an explicit URL into Qorgau Browser."""
 
     def __init__(self, agent, parent):
         super().__init__(parent)
         self.agent, self.selected, self.tabs = agent, None, []
-        self.setWindowTitle("Выберите вкладку Chrome / Edge")
+        self.setWindowTitle("Выберите вкладку или адрес сайта")
         self.setObjectName("window")
         self.setStyleSheet(APP_QSS)
-        self.resize(780, 480)
+        self.resize(780, 620)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(28, 26, 28, 24)
         layout.setSpacing(14)
-        layout.addWidget(text("Выберите вкладку Chrome / Edge", 26))
-        layout.addWidget(text("Выберите отдельную вкладку из подключённого браузера.", 14))
+        layout.addWidget(text("Выберите вкладку или адрес сайта", 26))
+        layout.addWidget(text("Сайт откроется по тому же адресу во встроенном Qorgau Browser.", 14))
         self.items = QListWidget()
         self.items.setItemDelegate(PickerDelegate(self.items))
         layout.addWidget(self.items)
@@ -699,10 +721,25 @@ class BrowserTabPicker(QDialog):
         buttons.addWidget(refresh)
         buttons.addStretch()
         select = QPushButton("Использовать вкладку")
+        select.setAutoDefault(False)
         select.setObjectName("primary")
         select.clicked.connect(self.choose)
         buttons.addWidget(select)
         layout.addLayout(buttons)
+        layout.addWidget(text("Firefox и другие браузеры без расширения: скопируйте адрес вкладки и вставьте его ниже.", 12))
+        address_row = QHBoxLayout()
+        self.url_field = QLineEdit()
+        self.url_field.setAccessibleName("Адрес сайта")
+        self.url_field.setPlaceholderText("https://example.com/exam")
+        # Do not silently truncate a longer pasted address to a different URL.
+        self.url_field.setMaxLength(8192)
+        self.url_field.returnPressed.connect(self.choose_url)
+        address_row.addWidget(self.url_field, 1)
+        self.url_button = QPushButton("Использовать адрес")
+        self.url_button.setAutoDefault(False)
+        self.url_button.clicked.connect(self.choose_url)
+        address_row.addWidget(self.url_button)
+        layout.addLayout(address_row)
         self.extension_help = text(
             "Для списка вкладок требуется расширение Qorgau и привязка браузера к приложению. "
             "Откройте chrome://extensions или edge://extensions, включите режим разработчика "
@@ -734,8 +771,19 @@ class BrowserTabPicker(QDialog):
     def choose(self):
         row = self.items.currentRow()
         if 0 <= row < len(self.tabs):
-            self.selected = dict(self.tabs[row])
-            self.accept()
+            self.choose_target(self.tabs[row])
+
+    def choose_url(self):
+        self.choose_target({'url': self.url_field.text().strip()})
+
+    def choose_target(self, target):
+        from .browser_tabs import builtin_browser_target
+        try:
+            self.selected = builtin_browser_target(target)
+        except ValueError:
+            self.status.setText("Укажите полный адрес сайта, начинающийся с http:// или https://.")
+            return
+        self.accept()
 
     def open_extension_folder(self):
         from PySide6.QtCore import QUrl

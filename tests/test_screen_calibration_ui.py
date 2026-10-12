@@ -70,6 +70,11 @@ def test_full_monitor_geometry_and_explicit_start(app, dialog):
     assert dialog.geometry() == dialog._screen.geometry()
     assert dialog.screen_selector.count() == len(QApplication.screens())
     assert dialog.isFullScreen()
+    assert dialog.title.text() == "Следите за кругами"
+    assert dialog.start_button.text() == "Понятно, начать"
+    assert "переведите взгляд" in dialog.intro_steps[0].text()
+    assert "обычном положении" in dialog.intro_steps[1].text()
+    assert "Мышью нажимать" in dialog.intro_steps[2].text()
     assert "9 точек" in dialog.instructions.text()
     assert "3 секунды" in dialog.instructions.text() and "27 секунд" in dialog.instructions.text()
     assert "повторятся автоматически" in dialog.instructions.text()

@@ -82,7 +82,7 @@ def test_pending_start_calibrates_then_prepares_environment_then_completes(gui, 
     from PySide6.QtWidgets import QDialog
     agent, window = gui
     original = agent.snapshot
-    pending = {"value": {"id": "authorized-start"}}
+    pending = {"value": {"id": "authorized-start", "student_identity_confirmed": True}}
     calls = []
 
     def snapshot():
@@ -129,7 +129,7 @@ def test_cancelled_calibration_never_launches_target_or_arms_exam(gui, app, monk
     from PySide6.QtWidgets import QDialog
     agent, window = gui
     original = agent.snapshot
-    pending = {"value": {"id": "cancelled-start"}}
+    pending = {"value": {"id": "cancelled-start", "student_identity_confirmed": True}}
     monkeypatch.setattr(agent, "snapshot", lambda: dict(original(), start_pending=pending["value"]))
 
     class Setup(QDialog):
@@ -291,7 +291,7 @@ def test_open_running_exam_rejects_reused_window_without_focusing_it(gui, monkey
     tick.assert_called_once()
 
 
-def test_tab_picker_preserves_exact_extension_tab_identity(app):
+def test_tab_picker_copies_exact_url_into_qorgau_without_external_tab_identity(app):
     from agent.exam_ui import BrowserTabPicker
     tabs = [dict(kind="BROWSER_TAB", id="instance:11", browser_instance="instance", window_id=5,
                  tab_id=11, title="Exam one", url="https://test.example/one"),
@@ -302,8 +302,9 @@ def test_tab_picker_preserves_exact_extension_tab_identity(app):
     assert picker.items.count() == 2
     picker.items.setCurrentRow(1)
     picker.choose()
-    assert picker.selected == tabs[1]
-    assert picker.selected is not tabs[1]
+    assert picker.selected == dict(id='primary-window', kind='BROWSER', name='Exam two',
+                                   url=tabs[1]['url'], guardable=True, builtin=True)
+    assert tabs[1]['tab_id'] == 12
 
 
 def test_empty_tab_roster_does_not_fallback_to_browser_window_titles(app):

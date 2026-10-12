@@ -4,9 +4,45 @@ import shutil
 import time
 from uuid import uuid4, UUID
 from urllib.parse import urlparse
+import unicodedata
 
 from shared.storage import atomic_json
 from .profile import read_object
+
+
+def is_browser_executable(executable):
+    """Recognize browser window owners, including saved Windows paths on Linux."""
+    name = str(executable).replace('\\', '/').rsplit('/', 1)[-1].casefold()
+    return name in {
+        'chrome.exe', 'msedge.exe', 'firefox.exe', 'opera.exe', 'brave.exe',
+        'vivaldi.exe', 'browser.exe', 'chromium.exe', 'waterfox.exe', 'librewolf.exe',
+    }
+
+
+def builtin_browser_target(target):
+    """Copy an explicitly selected web URL into the isolated exam browser.
+
+    The external tab is only a source of the address. Window/process identity,
+    extension binding, cookies and history never become part of this target.
+    """
+    if not isinstance(target, dict):
+        raise ValueError('INVALID_URL')
+    url = target.get('url')
+    if (not isinstance(url, str) or not url or len(url) > 2048 or '\\' in url
+            or any(char.isspace() or unicodedata.category(char).startswith('C') for char in url)):
+        raise ValueError('INVALID_URL')
+    try:
+        parsed = urlparse(url)
+        if (parsed.scheme not in ('http', 'https') or not parsed.hostname
+                or parsed.username is not None or parsed.password is not None
+                or parsed.port == 0):
+            raise ValueError('INVALID_URL')
+    except ValueError as error:
+        raise ValueError('INVALID_URL') from error
+    name = target.get('title') or target.get('name') or 'Qorgau Browser'
+    name = ' '.join(str(name).split())[:160]
+    return dict(id='primary-window', kind='BROWSER', name=name, url=url,
+                guardable=True, builtin=True)
 
 
 def safe_tabs(items, instance):
@@ -19,9 +55,12 @@ def safe_tabs(items, instance):
         if not isinstance(item, dict):
             continue
         tab, window = item.get('tab_id'), item.get('window_id')
-        url = str(item.get('url', ''))[:2048]
-        if (type(tab) is not int or type(window) is not int or min(tab, window) < 0
-                or urlparse(url).scheme not in ('http', 'https')):
+        url = item.get('url', '')
+        if type(tab) is not int or type(window) is not int or min(tab, window) < 0:
+            continue
+        try:
+            builtin_browser_target({'url': url})
+        except ValueError:
             continue
         title = str(item.get('title', 'Вкладка'))[:256]
         result.append(dict(kind='BROWSER_TAB', id=f'{instance}:{tab}',

@@ -24,14 +24,19 @@ REASONS = {
 }
 
 
+DISPLAY_CHANGE_WITHOUT_CAMERA = "Изменился экран. Продолжить контроль может преподаватель."
+
+
 def present(snapshot):
     state = snapshot["state"]
     lifecycle = state["lifecycle"]
     locked = state["access"] == "LOCKED"
+    no_camera = snapshot.get("mode") == "offline" and snapshot.get("without_camera", False)
     if locked:
         title = "Позовите преподавателя"
         message = (
-            REASONS.get(state.get("reason"), "Требуется проверка события.").rstrip(".")
+            (DISPLAY_CHANGE_WITHOUT_CAMERA if no_camera and state.get("reason") == "DISPLAY_CHANGED"
+             else REASONS.get(state.get("reason"), "Требуется проверка события.")).rstrip(".")
             + ". Продолжить тест может только преподаватель."
         )
         tone = "red"
@@ -44,25 +49,37 @@ def present(snapshot):
     elif lifecycle == "RUNNING":
         title = "Тест проходит в вашей системе"
         message = (
+            "Ограничения клавиш и выбранного окна действуют. Камера и распознавание отключены."
+            if no_camera else
             "Продолжайте работать в своей системе тестирования. Qorgau отслеживает события в фоне."
             if snapshot.get("camera")
             else "Связь с преподавателем работает. Камера выключена: распознавание телефона и лиц сейчас не выполняется."
         )
-        tone = "green" if snapshot.get("camera") else "amber"
+        tone = "green" if no_camera or snapshot.get("camera") else "amber"
         badge = "Идёт контроль" if snapshot.get("camera") else "Сеанс без камеры"
+    elif snapshot.get("mode") == "offline" and (snapshot.get("start_pending") or {}).get("awaiting_student"):
+        title = "Экзамен готов"
+        message = "Нажмите «Пройти экзамен», когда будете готовы начать."
+        tone = "neutral"
+        badge = "Ожидание ученика"
+    elif (snapshot.get("start_pending", {}) or {}).get("student_identity_required") and not snapshot["start_pending"].get("student_identity_confirmed"):
+        title = "Представьтесь перед началом экзамена"
+        message = "Введите ФИО в открывшемся окне, затем продолжите подготовку."
+        tone = "neutral"
+        badge = "Подготовка"
     elif snapshot.get("mode") == "offline":
         title = "Подготовка к автономному тесту"
-        message = "Выберите камеру и окно программы или вкладку. После нажатия «Начать экзамен» откроется настройка взгляда."
+        message = "Выберите окно программы или вкладку. Камера необязательна: включите «Без камеры» для контроля только компьютера."
         tone = "neutral"
         badge = "Автономный режим"
     elif snapshot.get("exam_id"):
         title = "Сеанс назначен. Ждём начала"
-        message = "Дождитесь начала сеанса. После команды преподавателя откроется настройка камеры и взгляда."
+        message = "Дождитесь начала сеанса. После команды преподавателя введите ФИО и подготовьте камеру."
         tone = "green"
         badge = "Ожидание старта"
     else:
         title = "Компьютер подключён. Ждём преподавателя"
-        message = "Преподаватель видит подключённый компьютер и может назначить сеанс. Настройка камеры откроется после начала."
+        message = "Преподаватель видит подключённый компьютер и может назначить сеанс. После начала потребуется ввести ФИО и подготовить камеру."
         tone = "neutral"
         badge = "Ожидание сеанса"
     return {
@@ -72,7 +89,7 @@ def present(snapshot):
         "badge": badge,
         "can_open": lifecycle == "RUNNING" and not locked,
         "can_calibrate": (lifecycle != "RUNNING" or (locked and state.get("reason") in ("AGENT_RESTARTED", "CAMERA_UNAVAILABLE", "DISPLAY_CHANGED")))
-        and not snapshot.get("camera_preparing", False),
+        and not snapshot.get("camera_preparing", False) and not no_camera,
         "locked": locked,
         "complete": lifecycle == "COMPLETED",
     }

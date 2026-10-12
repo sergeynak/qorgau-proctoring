@@ -21,6 +21,28 @@ def application():
     yield app
 
 
+@pytest.fixture
+def camera_dialogs(application):
+    """Dispose Qt signal owners after joining the workers used by each test."""
+    from PySide6.QtCore import QCoreApplication, QEvent
+
+    dialogs = []
+    yield dialogs
+    for dialog in reversed(dialogs):
+        dialog.preview_timer.stop()
+        worker = dialog.worker
+        if worker is not None:
+            worker.stop.set()
+            assert worker.wait(5000), "Camera test worker did not stop"
+        # Deliver finished/frame signals while their receiving widgets exist.
+        application.processEvents()
+        dialog.close()
+        dialog.deleteLater()
+        if worker is not None:
+            worker.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+
 class FakeCamera:
     def __init__(self, *args, calibrate=False):
         import cv2
@@ -94,7 +116,7 @@ def test_camera_start_cleans_up_without_returning_unusable_camera(application, f
 
 
 def test_one_click_camera_enables_auto_gaze_and_recovery_keeps_lock(
-    application, tmp_path
+    application, tmp_path, camera_dialogs
 ):
     from agent.camera_setup import CameraSetup
 
@@ -113,6 +135,7 @@ def test_one_click_camera_enables_auto_gaze_and_recovery_keeps_lock(
         ),
     ):
         dialog = CameraSetup(agent)
+    camera_dialogs.append(dialog)
     assert (
         not dialog.calibrate
         and dialog.progress.isHidden()
@@ -173,6 +196,7 @@ def test_one_click_camera_enables_auto_gaze_and_recovery_keeps_lock(
         ),
     ):
         recovery = CameraSetup(agent)
+    camera_dialogs.append(recovery)
     with patch("agent.vision.Camera", FakeCamera):
         callbacks[0]()
         deadline = time.monotonic() + 10
@@ -194,7 +218,7 @@ def test_one_click_camera_enables_auto_gaze_and_recovery_keeps_lock(
     agent.http.close()
 
 
-def test_cancel_before_queued_start_never_opens_camera(application, tmp_path):
+def test_cancel_before_queued_start_never_opens_camera(application, tmp_path, camera_dialogs):
     from agent.camera_setup import CameraSetup
 
     atomic_json(
@@ -212,6 +236,7 @@ def test_cancel_before_queued_start_never_opens_camera(application, tmp_path):
         ),
     ):
         dialog = CameraSetup(agent)
+    camera_dialogs.append(dialog)
     dialog.reject()
     with patch("agent.vision.Camera") as camera:
         callbacks[0]()

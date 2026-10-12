@@ -371,3 +371,145 @@ def test_assignment_rejects_names_for_unselected_computers(client):
         "student_names": {"other-pc": "Ученик"},
     }
     assert client.post("/api/exams", json=body).status_code == 422
+
+
+@pytest.fixture
+def student_exam(client):
+    code = client.post("/api/pairings", json={}).json()["code"]
+    enrolled = client.post(
+        "/api/agent/enroll", json={"code": code, "name": "ПК-01"}
+    ).json()
+    headers = {"Authorization": "Bearer " + enrolled["token"]}
+    identity = enrolled["device_id"]
+    targets = [{"id": "app", "kind": "APP", "name": "Test"}]
+    assert client.post(
+        "/api/agent/sync", headers=headers, json={"state": {}, "targets": targets}
+    ).status_code == 200
+    exam_input = {
+        "title": "Тест",
+        "group": "A",
+        "room": "301",
+        "device_ids": [identity],
+        "environment": {"kind": "APP", "target_id": "app"},
+        "student_names": {identity: "Имя преподавателя"},
+    }
+    response = client.post("/api/exams", json=exam_input)
+    assert response.status_code == 200, response.text
+    return headers, identity, response.json(), exam_input, targets
+
+
+def test_student_entered_name_reaches_session_participant_event_and_report(client, student_exam):
+    headers, identity, exam, _, targets = student_exam
+    name = "Иванов Иван Иванович"
+    response = client.post(
+        "/api/agent/sync",
+        headers=headers,
+        json={
+            "state": {},
+            "exam_id": exam["id"],
+            "student_name": "  Иванов   Иван  Иванович  ",
+            "targets": targets,
+            "events": [{"id": "student-event", "type": "SECOND_FACE_REVIEW", "at": 1, "start": 0}],
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["session"]["student"] == name
+    current = snapshot(client)
+    device = next(d for d in current["devices"] if d["id"] == identity)
+    assert device["student"] == name
+    assert device["name"] == "ПК-01"
+    assert current["exams"][0]["participants"][identity]["student"] == name
+    assert current["events"][0]["student"] == name
+    assert name in client.get(f"/api/exams/{exam['id']}/report.csv").text
+
+
+@pytest.mark.parametrize("optional_name", [
+    {}, {"student_name": None}, {"student_name": "   "},
+    {"student_name": "123"}, {"student_name": "Иван\nИванов"},
+])
+def test_absent_or_invalid_optional_student_name_preserves_assignment(client, student_exam, optional_name):
+    headers, identity, exam, _, targets = student_exam
+    response = client.post(
+        "/api/agent/sync", headers=headers,
+        json={"state": {}, "exam_id": exam["id"], "targets": targets, **optional_name},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["session"]["student"] == "Имя преподавателя"
+    assert snapshot(client)["exams"][0]["participants"][identity]["student"] == "Имя преподавателя"
+
+
+def test_student_name_limit_rejects_oversize_without_changing_assignment(client, student_exam):
+    headers, identity, exam, _, _ = student_exam
+    response = client.post(
+        "/api/agent/sync", headers=headers,
+        json={"state": {}, "exam_id": exam["id"], "student_name": "А" * 81},
+    )
+    assert response.status_code == 422
+    assert snapshot(client)["exams"][0]["participants"][identity]["student"] == "Имя преподавателя"
+
+
+@pytest.mark.parametrize("exam_id", [None, "another-exam"])
+def test_student_name_requires_current_exam_id(client, student_exam, exam_id):
+    headers, identity, _, _, targets = student_exam
+    response = client.post(
+        "/api/agent/sync", headers=headers,
+        json={"state": {}, "exam_id": exam_id, "student_name": "Другой ученик", "targets": targets},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["session"]["student"] == "Имя преподавателя"
+    assert snapshot(client)["exams"][0]["participants"][identity]["student"] == "Имя преподавателя"
+
+
+def test_student_name_is_ignored_until_an_exam_is_assigned(client):
+    code = client.post("/api/pairings", json={}).json()["code"]
+    enrolled = client.post(
+        "/api/agent/enroll", json={"code": code, "name": "ПК-01"}
+    ).json()
+    response = client.post(
+        "/api/agent/sync",
+        headers={"Authorization": "Bearer " + enrolled["token"]},
+        json={"state": {}, "exam_id": None, "student_name": "Первый ученик"},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["exam_id"] is None
+    device = next(d for d in snapshot(client)["devices"] if d["id"] == enrolled["device_id"])
+    assert device["name"] == "ПК-01"
+    assert device["student"] == "ПК-01"
+
+
+def test_student_entered_name_stays_in_exam_history_and_stale_sync_cannot_rename_next_exam(client, student_exam):
+    headers, identity, first, exam_input, targets = student_exam
+    payload = {"state": {}, "exam_id": first["id"], "targets": targets,
+               "student_name": "Первый ученик"}
+    assert client.post("/api/agent/sync", headers=headers, json=payload).status_code == 200
+    end = client.post(
+        f"/api/devices/{identity}/commands",
+        json={"type": "END_AND_RELEASE", "expected_version": 0, "reason": "Тест завершён"},
+    )
+    assert end.status_code == 200, end.text
+    finished = client.post(
+        "/api/agent/sync", headers=headers,
+        json={**payload, "state": {"lifecycle": "COMPLETED", "version": 1},
+              "acknowledgements": [{"id": end.json()["id"], "ok": True}]},
+    )
+    assert finished.status_code == 200, finished.text
+    exam_input.pop("student_names")
+    response = client.post("/api/exams", json=exam_input)
+    assert response.status_code == 200, response.text
+    second = response.json()
+    assert second["participants"][identity]["student"] == "ПК-01"
+
+    # An in-flight sync from the previous pupil must not name the next session.
+    stale = client.post("/api/agent/sync", headers=headers, json=payload)
+    assert stale.status_code == 200, stale.text
+    assert stale.json()["exam_id"] == second["id"]
+    assert stale.json()["session"]["student"] == "ПК-01"
+    new_name = client.post(
+        "/api/agent/sync", headers=headers,
+        json={**payload, "exam_id": second["id"], "student_name": "Следующий ученик"},
+    )
+    assert new_name.status_code == 200, new_name.text
+    assert new_name.json()["session"]["student"] == "Следующий ученик"
+    history = client.get(f"/api/exams/{first['id']}/report.csv").text
+    assert "Первый ученик" in history
+    assert "Следующий ученик" not in history

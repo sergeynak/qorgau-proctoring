@@ -6,11 +6,11 @@ import math
 
 from PySide6.QtCore import QElapsedTimer, QPointF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QPainter, QPen
-from PySide6.QtWidgets import (QApplication, QVBoxLayout)
+from PySide6.QtWidgets import (QApplication, QHBoxLayout, QVBoxLayout)
 from .localized_widgets import (QComboBox, QDialog, QLabel, QPushButton, QWidget)
 
 from .screen_capture import TARGET_SETTLE_SECONDS, TARGET_VISIBLE_SECONDS
-from .theme import CALIBRATION_QSS, COLORS, app_font
+from .theme import CALIBRATION_QSS, COLORS, StepBubble, app_font, ui_icon
 
 
 # Five fitting targets and four separate check targets, with no per-target click.
@@ -64,6 +64,7 @@ class ScreenCalibrationDialog(QDialog):
 
     def __init__(self, parent=None, *, screen=None):
         super().__init__(parent)
+        self.setObjectName("calibrationWindow")
         self.setWindowTitle("Qorgau — настройка взгляда по экрану")
         self.setWindowFlags(
             Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint
@@ -110,26 +111,51 @@ class ScreenCalibrationDialog(QDialog):
         layout = QVBoxLayout(self.panel)
         layout.setContentsMargins(28, 26, 28, 26)
         layout.setSpacing(18)
-        self.title = QLabel("Настройка взгляда по всему экрану", self.panel)
+        heading = QHBoxLayout()
+        heading.setSpacing(16)
+        symbol = QLabel(self.panel)
+        symbol.setObjectName("calibrationIntroIcon")
+        symbol.setFixedSize(56, 56)
+        symbol.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        symbol.setPixmap(ui_icon("eye", COLORS["blue"], 30).pixmap(30, 30))
+        heading.addWidget(symbol)
+        self.title = QLabel("Следите за кругами", self.panel)
         self.title.setObjectName("calibrationTitle")
         self.title.setWordWrap(True)
-        layout.addWidget(self.title)
+        heading.addWidget(self.title, 1)
+        layout.addLayout(heading)
+        self.intro_steps = []
+        for number, instruction in enumerate((
+            "Смотрите на синий круг. Когда он переместится, переведите взгляд за ним.",
+            "Держите голову в обычном положении — двигать нужно только глазами.",
+            "Мышью нажимать на круги не нужно.",
+        ), 1):
+            row = QHBoxLayout()
+            row.setSpacing(12)
+            row.addWidget(StepBubble(number), 0, Qt.AlignmentFlag.AlignTop)
+            instruction_label = QLabel(instruction, self.panel)
+            instruction_label.setObjectName("calibrationIntroStep")
+            instruction_label.setWordWrap(True)
+            row.addWidget(instruction_label, 1)
+            layout.addLayout(row)
+            self.intro_steps.append(instruction_label)
         point_count = len(FIT_POINTS) + len(VALIDATION_POINTS)
         duration_unit = "секунду" if TARGET_VISIBLE_SECONDS == 1 else (
             "секунды" if 2 <= TARGET_VISIBLE_SECONDS <= 4 else "секунд"
         )
         self.instructions = QLabel(
-            "Выберите монитор, на котором будете проходить экзамен. "
-            "Смотрите на появляющуюся точку, сохраняя обычное положение головы. "
-            f"Каждая из {point_count} точек показывается {TARGET_VISIBLE_SECONDS:g} {duration_unit} — "
-            f"первый проход займёт примерно {point_count * TARGET_VISIBLE_SECONDS:g} секунд. "
-            "Неудачные измерения повторятся автоматически. При необходимости приложение "
-            "заново уточнит границы экрана без перезапуска. Нажимать на точки не нужно. Esc — отмена.",
+            f"{point_count} точек, по {TARGET_VISIBLE_SECONDS:g} {duration_unit} на каждую — "
+            f"около {point_count * TARGET_VISIBLE_SECONDS:g} секунд. "
+            "Неудачные измерения повторятся автоматически, без перезапуска.",
             self.panel,
         )
         self.instructions.setObjectName("calibrationInstructions")
         self.instructions.setWordWrap(True)
         layout.addWidget(self.instructions)
+        monitor_label = QLabel("Монитор, на котором будете проходить тест", self.panel)
+        monitor_label.setObjectName("calibrationMonitorLabel")
+        monitor_label.setWordWrap(True)
+        layout.addWidget(monitor_label)
         self.screen_selector = QComboBox(self.panel)
         for screen in self._screens:
             rect = screen.geometry()
@@ -143,7 +169,7 @@ class ScreenCalibrationDialog(QDialog):
         self.error_label.setWordWrap(True)
         self.error_label.hide()
         layout.addWidget(self.error_label)
-        self.start_button = QPushButton("Начать настройку", self.panel)
+        self.start_button = QPushButton("Понятно, начать", self.panel)
         self.start_button.setObjectName("primary")
         self.start_button.clicked.connect(self._start)
         layout.addWidget(self.start_button)
@@ -272,12 +298,16 @@ class ScreenCalibrationDialog(QDialog):
 
     def paintEvent(self, event):
         super().paintEvent(event)
-        if self._target is None or not self._active:
-            return
         painter = QPainter(self)
+        # Keep the entire display bright, including between targets and while
+        # the panel is visible, so the monitor also illuminates the face.
+        painter.fillRect(self.rect(), QColor(COLORS["surface"]))
+        if self._target is None or not self._active:
+            painter.end()
+            return
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         location = target_position(self.rect(), self._target)
-        painter.setPen(QPen(QColor(COLORS["blue_light"]), 3))
+        painter.setPen(QPen(QColor(COLORS["blue"]), 3))
         painter.setBrush(QColor(COLORS["navy800"]))
         painter.drawEllipse(location, 23, 23)
         painter.setPen(Qt.PenStyle.NoPen)

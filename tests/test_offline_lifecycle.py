@@ -38,6 +38,7 @@ def local_exam(tmp_path, monkeypatch):
 
     def start():
         agent.offline_start(target)
+        agent.begin_student_exam(agent.start_pending['id'])
         agent.camera = SimpleNamespace(requires_gaze_reference=False, screen_calibration_required=True, close=Mock())
         agent.recorder = Mock()
         agent.capabilities.update(window_guard=True, guard_active=True, camera=True, recording=True, gaze=True)

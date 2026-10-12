@@ -32,6 +32,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from shared.rules import RuleEngine, State
+from shared.student_identity import MAX_STUDENT_NAME_LENGTH, validate_student_name
 from shared.version import APP_VERSION, RULE_VERSION
 
 from .db import Database, decode, encode
@@ -127,6 +128,7 @@ class DeviceUpdate(BaseModel):
     capabilities: dict = Field(default_factory=dict)
     acknowledgements: list[dict] = Field(default_factory=list, max_length=100)
     exam_id: str | None = None
+    student_name: str | None = Field(default=None, max_length=MAX_STUDENT_NAME_LENGTH)
 
 
 def create_app(data_dir=None, *, allow_demo=False):
@@ -1114,6 +1116,12 @@ def create_app(data_dir=None, *, allow_demo=False):
                     raise HTTPException(409, "Нельзя сбросить активный сеанс")
                 if st.version >= d["state"]["version"]:
                     d["state"] = st.public()
+                if body.student_name is not None:
+                    try:
+                        d["student"] = validate_student_name(body.student_name)
+                    except ValueError:
+                        # A missing or invalid optional name must not interrupt sync.
+                        pass
                 save_events(c, d, body.events)
             elif body.events:
                 raise HTTPException(409, "События другого сеанса")

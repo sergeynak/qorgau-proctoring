@@ -156,7 +156,7 @@ class SyntheticCamera:
 
 
 @pytest.fixture
-def setup(app, tmp_path, monkeypatch):
+def setup(app, tmp_path, monkeypatch, request):
     from agent import screen_capture, screen_calibration
     from agent.camera_setup import CameraSetup
 
@@ -171,7 +171,12 @@ def setup(app, tmp_path, monkeypatch):
     monkeypatch.setattr(screen_capture, "PRESENTATION_TIMEOUT_SECONDS", 1)
     monkeypatch.setattr(screen_capture, "SESSION_TIMEOUT_SECONDS", 5)
     atomic_json(tmp_path / "config.json", {"server": "http://localhost:8000", "token": "fixture"})
-    agent = Agent(tmp_path)
+    if getattr(request, "param", "online") == "offline":
+        from agent.offline import OfflineAgent
+
+        agent = OfflineAgent(tmp_path)
+    else:
+        agent = Agent(tmp_path)
     camera = SyntheticCamera(clock)
     model = tmp_path / "model"
     model.write_bytes(b"fixture")
@@ -197,7 +202,8 @@ def setup(app, tmp_path, monkeypatch):
 
 
 def begin_targets(app, dialog):
-    assert dialog.start_button.text() == "Настроить по точкам"
+    assert dialog.start_button.text() == "Начать"
+    assert dialog.screen_dialog is None
     dialog.start_button.click()
     until(app, lambda: dialog.screen_dialog is not None and dialog.screen_dialog.isVisible())
     overlay = dialog.screen_dialog
@@ -228,6 +234,66 @@ def test_success_defers_camera_handoff_until_automatic_overlay_accept(app, setup
     # Repeated finished delivery cannot connect or close a consumed camera again.
     dialog.finished_calibration()
     assert camera.close_calls == 0 and agent.camera is camera
+
+
+@pytest.mark.parametrize("setup", ["online", "offline"], indirect=True)
+def test_preview_waits_for_student_then_intro_waits_for_second_confirmation(app, setup):
+    agent, camera, dialog = setup
+    assert dialog.screen_dialog is None
+    assert dialog.preview_timer.isActive()
+    assert dialog.preview.pixmap() and not dialog.preview.pixmap().isNull()
+    assert dialog.start_button.isEnabled() and dialog.start_button.text() == "Начать"
+    frame_id = camera.frame_id
+    until(app, lambda: camera.frame_id >= frame_id + 5)
+    assert dialog.screen_dialog is None
+    assert camera.attempt == 0 and not camera.collecting and not camera.sample_attempts
+    assert not dialog.worker.confirm.is_set()
+    assert agent.camera is None and agent.camera_preparing
+
+    dialog.start_button.click()
+    until(app, lambda: dialog.screen_dialog is not None and dialog.screen_dialog.isVisible())
+    overlay = dialog.screen_dialog
+    started = []
+    overlay.started.connect(started.append)
+    assert overlay.panel.isVisible()
+    assert overlay.title.text() == "Следите за кругами"
+    assert not dialog.start_button.isEnabled()
+    # Repeated signal delivery cannot create another overlay or release capture.
+    dialog.primary_action()
+    dialog.primary_action()
+    assert dialog.screen_dialog is overlay
+    frame_id = camera.frame_id
+    until(app, lambda: camera.frame_id >= frame_id + 5)
+    assert not overlay._active and overlay._target is None
+    assert not started and not camera.target_sequence and camera.attempt == 0
+    assert agent.camera_preparing and agent.camera is None
+    overlay.start_button.click()
+    assert len(started) == 1 and not overlay.panel.isVisible()
+    until(app, lambda: bool(camera.target_sequence))
+
+
+@pytest.mark.parametrize("stage", ["seating", "intro"])
+def test_cancel_before_points_closes_preview_without_connecting_camera(app, setup, stage):
+    agent, camera, dialog = setup
+    if stage == "intro":
+        dialog.start_button.click()
+        until(app, lambda: dialog.screen_dialog is not None and dialog.screen_dialog.isVisible())
+    overlay = dialog.screen_dialog
+    assert camera.attempt == 0 and not camera.collecting
+    dialog.reject()
+    assert not dialog.preview_timer.isActive()
+    assert not dialog.start_button.isEnabled()
+    # Late delivery of a click/readiness signal must not undo cancellation.
+    dialog.primary_action()
+    dialog.camera_ready()
+    until(app, lambda: not dialog.preparing)
+    assert camera.closed and camera.close_calls == 1
+    assert camera.attempt == 0 and not camera.target_sequence and not camera.sample_attempts
+    assert agent.camera is None and dialog.worker.result is None
+    assert not agent.camera_preparing and not agent.capabilities["camera"]
+    assert not agent.capabilities["gaze"] and not dialog.isVisible()
+    assert overlay is None or not overlay.isVisible()
+    assert not any(agent.engine.state.counts().values())
 
 
 def test_escape_after_worker_finished_closes_pending_camera(app, setup):

@@ -5,7 +5,7 @@ import threading
 import time
 from PySide6.QtCore import Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
-from PySide6.QtWidgets import (QVBoxLayout, QHBoxLayout, QSpinBox, QProgressBar, QSizePolicy)
+from PySide6.QtWidgets import (QVBoxLayout, QHBoxLayout, QProgressBar, QSizePolicy)
 from .localized_widgets import (QDialog, QLabel, QLineEdit, QPushButton, QFileDialog)
 from .client import atomic_json
 from .behavior import POSITIONS
@@ -280,7 +280,7 @@ class CameraSetup(QDialog):
         )
         # Leave enough vertical room at Windows display scaling so the preview,
         # instructions and button labels never overlap or get clipped.
-        self.resize(760, 780)
+        self.resize(760, 720)
         self.setMinimumSize(520, 580)
         from .desktop import STYLE, label
 
@@ -304,14 +304,7 @@ class CameraSetup(QDialog):
             )
         )
         settings = agent.config.get("camera_settings", {})
-        row = QHBoxLayout()
-        row.addWidget(label("Номер камеры", "field"))
-        self.index = QSpinBox()
-        self.index.setRange(0, 9)
-        self.index.setValue(settings.get("index", 0) if index is None else index)
-        row.addWidget(self.index)
-        row.addStretch()
-        layout.addLayout(row)
+        self.camera_index = settings.get("index", 0) if index is None else index
         from .resources import verified_models
 
         self.model_error = ""
@@ -338,6 +331,7 @@ class CameraSetup(QDialog):
         layout.addWidget(self.preview, 1)
         guides = QHBoxLayout()
         guides.setSpacing(18)
+        self.preview_guides = []
         for number, title, hint in (
             (1, "Лицо в овале", "Свет спереди, не сзади"),
             (2, "Посмотрите на экран", "Qorgau запомнит позу"),
@@ -348,8 +342,10 @@ class CameraSetup(QDialog):
             guide.addWidget(StepBubble(number, "now" if number == 1 else "empty"), 0, Qt.AlignmentFlag.AlignTop)
             wording = QVBoxLayout()
             wording.setSpacing(3)
-            wording.addWidget(label(title, "field"))
-            wording.addWidget(label(hint, "small"))
+            title_label, hint_label = label(title, "field"), label(hint, "small")
+            wording.addWidget(title_label)
+            wording.addWidget(hint_label)
+            self.preview_guides.append((title_label, hint_label))
             guide.addLayout(wording)
             guides.addLayout(guide, 1)
         layout.addLayout(guides)
@@ -357,7 +353,7 @@ class CameraSetup(QDialog):
         self.instruction = label(
             "Перед началом уберите телефон и убедитесь, что в кадре только вы."
             if calibrate
-            else "После подключения дождитесь начала теста.",
+            else "Сядьте удобно и расположите лицо внутри овала.",
             "heading",
         )
         layout.addWidget(self.instruction)
@@ -453,10 +449,9 @@ class CameraSetup(QDialog):
         self.progress.setVisible(self.calibrate)
         self.phone.setEnabled(False)
         self.face.setEnabled(False)
-        self.index.setEnabled(False)
         worker_type = CalibrationWorker if self.calibrate else CameraStartWorker
         self.worker = worker_type(
-            self.index.value(), phone.resolve(), face.resolve(), self.agent.folder
+            self.camera_index, phone.resolve(), face.resolve(), self.agent.folder
         )
         self.worker.frame.connect(self.show_frame)
         if not self.calibrate:
@@ -476,6 +471,8 @@ class CameraSetup(QDialog):
         self.preview_timer.start()
 
     def primary_action(self):
+        if self.cancelled:
+            return
         if (
             not self.calibrate
             and self.worker
@@ -504,11 +501,19 @@ class CameraSetup(QDialog):
             return
         self.preview_ready = True
         if self.screen_reference:
-            self.instruction.setText('Следите глазами за 9 точками: по 3 секунды на каждую, первый проход — примерно 27 секунд.')
-            self.feedback.setText('Неудачные измерения повторятся автоматически; перезапуск не нужен. Esc — отмена.')
-            self.start_button.setText('Настроить по точкам')
+            for (title, hint), wording in zip(self.preview_guides, (
+                ('Сядьте удобно', 'Держите голову прямо'),
+                ('Лицо в овале', 'Свет спереди, не сзади'),
+                ('Нажмите «Начать»', 'Когда будете готовы'),
+            )):
+                title.setText(wording[0])
+                hint.setText(wording[1])
+            self.instruction.setText('Сядьте удобно и поместите лицо в овал. Когда будете готовы, нажмите «Начать».')
+            self.feedback.setText('Следующим шагом откроется инструкция по настройке взгляда.')
+            self.start_button.setText('Начать')
             self.start_button.setEnabled(True)
-            QTimer.singleShot(0, self.open_screen_calibration)
+            # Leave the live preview visible for as long as the student needs.
+            # Only primary_action opens the separate points introduction.
             return
         self.instruction.setText(
             "Посмотрите в центр экрана. Нажмите кнопку и удерживайте взгляд, пока идёт настройка."
@@ -529,7 +534,8 @@ class CameraSetup(QDialog):
 
     def open_screen_calibration(self):
         from .screen_calibration import ScreenCalibrationDialog
-        if self.screen_dialog is not None or self.cancelled or not self.worker.isRunning():
+        if (self.screen_dialog is not None or self.cancelled or not self.preview_ready
+                or not self.screen_reference or self.worker is None or not self.worker.isRunning()):
             return
         try:
             dialog = self.screen_dialog = ScreenCalibrationDialog(self, screen=self.calibration_screen)
@@ -699,7 +705,7 @@ class CameraSetup(QDialog):
                         else "yolo11n-phone/yolov8n-face/mediapipe-auto-gaze",
                     )
                     self.agent.config["camera_settings"] = {
-                        "index": self.index.value(),
+                        "index": self.camera_index,
                         "phone_model": str(self.worker.phone),
                         "face_model": str(self.worker.face),
                     }
@@ -724,11 +730,11 @@ class CameraSetup(QDialog):
         self.start_button.setEnabled(True)
         self.phone.setEnabled(True)
         self.face.setEnabled(True)
-        self.index.setEnabled(True)
         self.capture.hide()
 
     def reject(self):
         self.cancelled = True
+        self.start_button.setEnabled(False)
         self.preview_timer.stop()
         if self.screen_dialog is not None:
             self.screen_dialog.hide()

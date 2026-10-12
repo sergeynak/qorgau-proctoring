@@ -133,6 +133,7 @@ class Agent(SessionControl, TeacherAccess):
             "gaze": False,
             "platform": os.name,
             "interactive_start": False,
+            "student_identity_required": False,
         }
         self.camera = None
         self.capture_pump = None
@@ -160,7 +161,7 @@ class Agent(SessionControl, TeacherAccess):
 
         # Recover encoded clips and unfinished segments even before reopening the
         # camera. Acknowledgements must update this single recorder instance.
-        if (folder / "clips/recording.json").is_file():
+        if not self.without_camera and (folder / "clips/recording.json").is_file():
             try:
                 from .recording import ClipRecorder
                 self.recorder = ClipRecorder(folder / "clips")
@@ -190,7 +191,8 @@ class Agent(SessionControl, TeacherAccess):
 
     def update_recognition_mode(self):
         """Caller holds mutex; pausing inference must not stop evidence capture."""
-        paused = self.engine.state.access == "LOCKED" or self.engine.state.lifecycle == "COMPLETED"
+        paused = (self.without_camera or self.engine.state.access == "LOCKED"
+                  or self.engine.state.lifecycle == "COMPLETED")
         changed = paused != self.recognition_paused
         review = self._phone_review
         if review and (self.engine.state.lifecycle != "RUNNING"
@@ -199,7 +201,8 @@ class Agent(SessionControl, TeacherAccess):
                        ):
             self._phone_review = None
             changed = True
-        if self.engine.state.lifecycle == 'RUNNING' and self.engine.state.access == 'LOCKED' and self._phone_review is None:
+        if (not self.without_camera and self.engine.state.lifecycle == 'RUNNING'
+                and self.engine.state.access == 'LOCKED' and self._phone_review is None):
             at = time.monotonic()
             self._phone_review = {'lock_id': self.engine.state.lock_id, 'until': float('inf'),
                                   'started': at, 'last_at': at, 'event_id': None,
@@ -262,6 +265,7 @@ class Agent(SessionControl, TeacherAccess):
             if command["expires_at"] < now:
                 raise ValueError("COMMAND_EXPIRED")
             kind = command["type"]
+            require_camera = command.get('require_camera', True) and not self.without_camera
             deferred_start = (kind == 'START' and self.capabilities.get('interactive_start')
                               and not command.get('_prepared_start'))
             if (
@@ -269,7 +273,7 @@ class Agent(SessionControl, TeacherAccess):
                 and command.get("expected_version") != self.engine.state.version
             ):
                 raise ValueError("STATE_CONFLICT")
-            if (kind in ("START", "UNLOCK") and not deferred_start
+            if (kind in ("START", "UNLOCK") and not deferred_start and not self.without_camera
                     and getattr(self.camera, "screen_calibration_required", False) is True
                     and getattr(self.camera, "requires_gaze_reference", True)):
                 # Includes a queued GUI monitor change, before the capture
@@ -289,12 +293,12 @@ class Agent(SessionControl, TeacherAccess):
                 if self.guarded:
                     if not self.capabilities.get("window_guard"):
                         raise ValueError("WINDOW_GUARD_UNAVAILABLE")
-                    if not self.camera or not self.recorder:
+                    if not self.without_camera and (not self.camera or not self.recorder):
                         raise ValueError("CAMERA_REQUIRED")
 
-                if command.get("require_camera", True) and (not self.camera or not self.recorder or self.camera_fault):
+                if require_camera and (not self.camera or not self.recorder or self.camera_fault):
                     raise ValueError("CAMERA_NOT_READY")
-                if command.get("require_camera", True):
+                if require_camera:
                     if self.last_observation_at is None or time.monotonic() - self.last_observation_at > 2:
                         raise ValueError("CAMERA_FRAME_STALE")
                     if self.last_observation["faces"] != 1:
@@ -310,7 +314,7 @@ class Agent(SessionControl, TeacherAccess):
             elif kind == "LOCK":
                 self.engine.lock("TEACHER_LOCK")
             elif kind == "UNLOCK":
-                if self.camera_fault or (command.get("require_camera", True) and not self.camera):
+                if not self.without_camera and (self.camera_fault or (require_camera and not self.camera)):
                     raise ValueError("CAMERA_UNAVAILABLE")
                 if self.guarded and not self.capabilities.get("guard_active"):
                     raise ValueError("WINDOW_GUARD_UNAVAILABLE")
@@ -368,6 +372,10 @@ class Agent(SessionControl, TeacherAccess):
         if env.get("kind") == "DESKTOP":
             selected = next((t for t in self.targets if t.get("id") == "primary-window"), None)
             if selected:
+                if selected.get("kind") == "BROWSER" and selected.get("builtin") is True:
+                    from .browser_tabs import builtin_browser_target
+                    self.guard_target = {"builtin_url": builtin_browser_target(selected)["url"]}
+                    return
                 if self.guarded and selected.get("guardable") is False:
                     raise ValueError("BROWSER_REQUIRES_QORGAU_BROWSER")
                 from .windows_guard import WindowsGuard, WindowTarget
@@ -388,6 +396,15 @@ class Agent(SessionControl, TeacherAccess):
         )
         if not target:
             raise ValueError("TARGET_UNAVAILABLE")
+        if target.get("kind") == "BROWSER" and target.get("builtin") is True:
+            from .browser_tabs import builtin_browser_target
+            selected = builtin_browser_target(target)
+            # The selected tab supplies the URL. An inconsistent assignment
+            # must not silently launch a different site.
+            if env.get("url") not in (None, selected["url"]):
+                raise ValueError("INVALID_URL")
+            self.guard_target = {"builtin_url": selected["url"]}
+            return
         if self.guarded and (target.get("guardable") is False or (
             env.get("kind") == "BROWSER" and target["id"] != "qorgau-browser"
         )):
@@ -453,6 +470,8 @@ class Agent(SessionControl, TeacherAccess):
                 ],
                 "capabilities": {**self.capabilities, "camera_fault": self.camera_fault, "recording_tail": self.record_until is not None},
             }
+            if self.student_name:
+                payload['student_name'] = self.student_name
         response = self.http.post("/api/agent/sync", json=payload)
         response.raise_for_status()
         config = response.json()
@@ -625,6 +644,8 @@ class Agent(SessionControl, TeacherAccess):
 
     def observe(self, direction="UNKNOWN", phone_confidence=0.0, faces=1, frame=None, phone_aiming=False, detections=(), captured_at=None, gaze_diagnostics=None, phone_review_only=False, phone_review_lock_id=None, phone_episode_id=None):
         with self.mutex:
+            if self.without_camera:
+                return
             mode_changed = self.update_recognition_mode()
             now = time.monotonic()
             at = now if captured_at is None else captured_at
@@ -788,6 +809,12 @@ class Agent(SessionControl, TeacherAccess):
             return
         if (self.environment or {}).get("target_id") == "qorgau-browser":
             return
+        target_id = (self.environment or {}).get("target_id")
+        if any(target.get("id") == target_id and target.get("builtin") is True
+               for target in self.targets):
+            # This exam now lives in Qorgau. The source browser's extension may
+            # still report its old tab, which is no longer the exam environment.
+            return
         path = self.folder / "browser.json"
         if not path.exists():
             return
@@ -843,7 +870,7 @@ class Agent(SessionControl, TeacherAccess):
     def snapshot(self):
         with self.mutex:
             return {
-                'mode': self.mode, 'start_pending': dict(self.start_pending) if self.start_pending else None,
+                'mode': self.mode, 'without_camera': self.without_camera, 'start_pending': dict(self.start_pending) if self.start_pending else None,
                 'start_camera_ready': self.start_camera_ready,
                 'local_password_ready': self.local_access.ready,
                 'teacher_face_scan': self.teacher_face_scan,
@@ -862,6 +889,7 @@ class Agent(SessionControl, TeacherAccess):
                 and time.monotonic() - self.last_synced_at < 6,
                 "session": self.session,
                 "exam_id": self.journal.get("exam_id"),
+                "student_name": self.student_name,
                 "device_name": self.config.get("name", "Компьютер аудитории"),
                 "pending_media": len(self.journal.get("media", [])),
                 "recent_events": list(self.journal.get("recent_events", [])),
@@ -960,9 +988,11 @@ class Agent(SessionControl, TeacherAccess):
                                         and time.time() - browser.get('at', 0) > 6):
                                     self.security_event('BROWSER_TRACKING_LOST')
                     self.read_browser()
-                    should_capture = self.camera and (self.engine.state.lifecycle != "COMPLETED" or self.record_until is not None)
+                    should_capture = not self.without_camera and self.camera and (self.engine.state.lifecycle != "COMPLETED" or self.record_until is not None)
                     if should_capture:
                         with self.mutex:
+                            if self.without_camera or self.camera is None:
+                                continue
                             if self.update_recognition_mode():
                                 self.save()
                             if self.capture_pump is None:
@@ -983,7 +1013,9 @@ class Agent(SessionControl, TeacherAccess):
                         stop.wait(0.1)
                 except (OSError, RuntimeError) as err:
                     with self.mutex:
-                        if (not self.camera_fault and self.engine.state.lifecycle == "RUNNING"
+                        if self.without_camera:
+                            self.security_event("AGENT_FAILURE")
+                        elif (not self.camera_fault and self.engine.state.lifecycle == "RUNNING"
                                 and self.engine.state.access != 'LOCKED'):
                             t = time.monotonic() - self.origin
                             self.journal["events"].append(

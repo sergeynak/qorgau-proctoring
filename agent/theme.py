@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QByteArray, QRectF, Qt
-from PySide6.QtGui import QColor, QFont, QFontDatabase, QIcon, QPainter, QPen, QPixmap
+from PySide6.QtGui import QColor, QFont, QFontDatabase, QIcon, QPainter, QPalette, QPen, QPixmap
 from PySide6.QtWidgets import (QHBoxLayout)
 from .localized_widgets import (QLabel, QWidget)
 from PySide6.QtSvg import QSvgRenderer
@@ -50,9 +50,46 @@ def app_font(size: int = 13, weight: QFont.Weight = QFont.Weight.Normal) -> QFon
     return font
 
 
+def apply_light_theme(app) -> None:
+    """Keep unstyled surfaces and native controls consistent with our light QSS."""
+    app.setStyle("Fusion")
+    app.styleHints().setColorScheme(Qt.ColorScheme.Light)
+    palette = QPalette()
+    for role, color in {
+        QPalette.ColorRole.Window: "bg",
+        QPalette.ColorRole.WindowText: "text",
+        QPalette.ColorRole.Base: "surface",
+        QPalette.ColorRole.AlternateBase: "surface2",
+        QPalette.ColorRole.Text: "text",
+        QPalette.ColorRole.Button: "surface",
+        QPalette.ColorRole.ButtonText: "text",
+        QPalette.ColorRole.ToolTipBase: "surface",
+        QPalette.ColorRole.ToolTipText: "text",
+        QPalette.ColorRole.PlaceholderText: "muted",
+        QPalette.ColorRole.Highlight: "blue",
+        QPalette.ColorRole.HighlightedText: "surface",
+        QPalette.ColorRole.BrightText: "surface",
+        QPalette.ColorRole.Link: "blue",
+        QPalette.ColorRole.LinkVisited: "navy700",
+        QPalette.ColorRole.Light: "surface",
+        QPalette.ColorRole.Midlight: "line_soft",
+        QPalette.ColorRole.Mid: "step_line",
+        QPalette.ColorRole.Dark: "muted",
+        QPalette.ColorRole.Shadow: "line",
+    }.items():
+        palette.setColor(role, QColor(COLORS[color]))
+    for role in (QPalette.ColorRole.WindowText, QPalette.ColorRole.Text,
+                 QPalette.ColorRole.ButtonText):
+        palette.setColor(QPalette.ColorGroup.Disabled, role, QColor(COLORS["muted"]))
+    for role in (QPalette.ColorRole.Base, QPalette.ColorRole.Button):
+        palette.setColor(QPalette.ColorGroup.Disabled, role, QColor(COLORS["bg"]))
+    app.setPalette(palette)
+
+
 APP_QSS = f"""
 QWidget {{font-family:"Geologica","Segoe UI",sans-serif;font-size:14px;color:{COLORS['text']};}}
 QWidget#window {{background:{COLORS['surface']};}}
+QWidget#dashboardPage,QWidget#dashboardViewport,QScrollArea#dashboard-scroll {{background:{COLORS['bg']};}}
 QLabel {{background:transparent;}}
 QLabel#brand {{font-size:24px;font-weight:600;}}
 QLabel#title {{font-size:26px;font-weight:600;}}
@@ -72,6 +109,11 @@ QLabel#heroTitle {{font-size:24px;font-weight:600;}}
 QLineEdit,QComboBox,QSpinBox {{background:{COLORS['surface']};border:1px solid {COLORS['line']};border-radius:8px;padding:10px 12px;color:{COLORS['text']};selection-background-color:{COLORS['blue']};min-height:22px;}}
 QLineEdit:focus,QComboBox:focus,QSpinBox:focus {{border:2px solid {COLORS['blue']};padding:9px 11px;}}
 QLineEdit:disabled,QComboBox:disabled,QSpinBox:disabled {{background:{COLORS['bg']};color:{COLORS['muted']};}}
+QComboBox {{padding-right:34px;}}
+QComboBox:focus {{padding-right:33px;}}
+QComboBox::drop-down {{subcontrol-origin:padding;subcontrol-position:top right;width:30px;border:0;}}
+QComboBox::down-arrow {{image:url("{(resource_root() / 'agent/icons/chevron-down.svg').as_posix()}");width:16px;height:16px;}}
+QComboBox QAbstractItemView {{background:{COLORS['surface']};color:{COLORS['text']};border:1px solid {COLORS['line']};selection-background-color:{COLORS['blue_tint']};selection-color:{COLORS['navy800']};outline:0;}}
 QPushButton {{background:{COLORS['surface']};border:1px solid {COLORS['line']};border-radius:10px;padding:10px 14px;color:{COLORS['text']};font-size:14px;font-weight:500;min-height:22px;}}
 QPushButton:hover {{background:{COLORS['blue_tint']};border-color:{COLORS['blue']};}}
 QPushButton:focus {{border:2px solid {COLORS['blue']};padding:9px 13px;}}
@@ -213,12 +255,15 @@ def ui_icon(name: str, color=None, size=24):
 
 
 CALIBRATION_QSS = APP_QSS + f"""
-QDialog {{background:{COLORS['navy900']};}}
-QWidget#calibrationPanel {{background:{COLORS['surface']};border-radius:16px;}}
-QLabel#calibrationTitle {{font-size:24px;font-weight:600;}}
-QLabel#calibrationInstructions {{color:{COLORS['muted']};font-size:16px;}}
-QLabel#calibrationError {{background:{COLORS['red_tint']};color:{COLORS['red']};padding:12px;border-radius:10px;}}
-QLabel#calibrationProgress {{color:{COLORS['surface']};background:rgba(15,34,69,210);border-radius:10px;padding:12px;font-size:16px;}}
+QDialog#calibrationWindow {{background:{COLORS['surface']};color:{COLORS['text']};}}
+QWidget#calibrationPanel {{background:{COLORS['surface']};border:1px solid {COLORS['line']};border-radius:16px;}}
+QLabel#calibrationIntroIcon {{background:{COLORS['blue_tint']};border-radius:16px;}}
+QLabel#calibrationTitle {{color:{COLORS['text']};font-size:32px;font-weight:600;}}
+QLabel#calibrationIntroStep {{color:{COLORS['text']};font-size:17px;}}
+QLabel#calibrationInstructions {{color:{COLORS['text']};background:{COLORS['blue_tint']};border-radius:10px;padding:12px;font-size:13px;}}
+QLabel#calibrationMonitorLabel {{color:{COLORS['muted']};font-size:13px;}}
+QLabel#calibrationError {{background:{COLORS['red_tint']};color:{COLORS['text']};padding:12px;border-radius:10px;}}
+QLabel#calibrationProgress {{color:{COLORS['text']};background:{COLORS['surface']};border-radius:10px;padding:12px;font-size:16px;}}
 """
 
 TEACHER_BUTTON_QSS = f"""
