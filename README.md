@@ -2,9 +2,9 @@
 
 Qorgau помогает преподавателю проводить экзамен на компьютерах Windows: приложение анализирует веб-камеру локально, контролирует выбранную среду теста и сохраняет материалы событий для разбора. Поддерживаются сеанс из веб-кабинета и автономный запуск на одном компьютере.
 
-**Версия исходников 0.5.3 · Windows x64 · функциональный MVP для хакатона и контролируемого пилота.** Статус публикации и состав конкретного EXE проверяйте в [выпусках](https://github.com/ovverage/hackaton-kru/releases) и их `SHA256SUMS.txt`: обновление сайта не обновляет ранее скачанное приложение.
+**Версия исходников 0.5.3 · Windows x64 · функциональный MVP для хакатона и контролируемого пилота.** Статус публикации и состав конкретного EXE проверяйте в [выпусках](https://github.com/sergeynak/qorgau-proctoring/releases) и их `SHA256SUMS.txt`: обновление сайта не обновляет ранее скачанное приложение.
 
-[Кабинет преподавателя](https://212.19.134.23/) · [Онлайн-приложение](https://212.19.134.23/api/student/download) · [Автономное приложение](https://212.19.134.23/api/student/download-offline) · [История изменений](docs/RELEASE_NOTES.md) · [Карточка моделей](docs/MODEL_CARD_2026_10_07.md) · [Приёмка](docs/RELEASE_CHECKLIST.md)
+[Кабинет преподавателя](https://212.19.134.23/) · [Онлайн-приложение](https://github.com/sergeynak/qorgau-proctoring/releases/download/qorgau-windows-2026-10-12/Qorgau-Student.exe) · [Автономное приложение](https://github.com/sergeynak/qorgau-proctoring/releases/download/qorgau-windows-2026-10-12/Qorgau-Offline.exe) · [История изменений](docs/RELEASE_NOTES.md) · [Карточка моделей](docs/MODEL_CARD_2026_10_07.md) · [Приёмка](docs/RELEASE_CHECKLIST.md)
 
 ## Для какой среды
 
